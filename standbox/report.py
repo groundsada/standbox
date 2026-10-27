@@ -357,14 +357,16 @@ def build_report(name, cli, text, out_root, constraints=None):
             if action:
                 all_ok &= add(f"{v}", [sub, action], "ALLOW")
             else:
-                all_ok &= add(f"{v}", [sub, "list"], "ALLOW")
+                # single-word subcommand (`git status`, `terraform plan`):
+                # test it bare, the gate prefix-matches it
+                all_ok &= add(f"{v}", [sub], "ALLOW")
         # tested denials
         for d in c.get("deny", []):
             sub, _, action = d.partition(" ")
             if action:
                 all_ok &= add(f"denied {d}", [sub, action], "BLOCK")
             else:
-                all_ok &= add(f"denied {d}", [d, "delete"], "BLOCK")
+                all_ok &= add(f"denied {d}", [d], "BLOCK")
     else:
         ns0 = c["namespaces"][0]
         seen = set()

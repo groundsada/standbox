@@ -12,7 +12,7 @@ for tool in asciinema agg; do
 done
 
 asciinema rec -c "bash docs/demo-session.sh" --cols 100 --rows 34 -i 2 \
-  docs/standbox-demo.cast
+  --overwrite docs/standbox-demo.cast
 agg --speed 1.3 --font-size 14 --theme monokai \
   docs/standbox-demo.cast docs/standbox-demo.gif
 

@@ -1,64 +1,92 @@
 #!/usr/bin/env bash
-# standbox demo: generate -> report -> gate ALLOW/BLOCK -> container command.
-# Runs against a scratch dir. Never touches a real cluster (gate target = echo).
+# standbox demo: same flow, several different CLIs.
+# Runs in a scratch dir. Gate targets are /bin/echo, so nothing touches a real
+# cluster, repo, or database.
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 
 GREEN=$'\033[32m'; DIM=$'\033[2m'; BOLD=$'\033[1m'; OFF=$'\033[0m'
-type_cmd() { printf '%s$ %s%s\n' "$GREEN" "$1" "$OFF"; sleep 0.8; }
+type_cmd() { printf '%s$ %s%s\n' "$GREEN" "$1" "$OFF"; sleep 0.7; }
 pause() { sleep "${1:-1}"; }
 
 WORK=$(mktemp -d)
 cd "$WORK" || exit 1
-USE_CASE='only namespace mfsada, crud on pods and deployments, port-forward allowed, no jobs but cronjobs ok, no secrets'
+export STANDBOX_REAL_BIN=/bin/echo
+
+# cli | use case
+CASES=(
+  "kubectl|only namespace mfsada, crud on pods and deployments, port-forward allowed, no jobs but cronjobs ok, no secrets"
+  "terraform|read-only: plan, validate, state list only. no apply, no destroy, no -auto-approve"
+  "git|read-only: status log diff. no push, no commit, no reset"
+  "psql|READ-ONLY SQL: allow SELECT, WITH, SHOW. DENY: DROP, DELETE, UPDATE, INSERT, TRUNCATE"
+)
+
+# probe | expect
+PROBES_kubectl=(
+  "get deployments -n mfsada|0"
+  "get secrets -n mfsada|3"
+  "get pods -A|3"
+)
+PROBES_terraform=(
+  "plan|0"
+  "state list|0"
+  "apply|3"
+  "plan -auto-approve|3"
+)
+PROBES_git=(
+  "status|0"
+  "log|0"
+  "push|3"
+  "commit -m x|3"
+)
+PROBES_psql=(
+  "-c 'SELECT * FROM users'|0"
+  "-c 'DROP TABLE users'|3"
+  "-c 'DELETE FROM users WHERE id=1'|3"
+)
 
 clear
 printf '%sstandbox%s  per-agent client-side permission gates for CLIs\n' "$BOLD" "$OFF"
-printf '%sdescribe a sandbox in plain English, get an enforced gate + report%s\n\n' "$DIM" "$OFF"
+printf '%sone generator, any CLI: describe the policy in English, get an enforced gate%s\n\n' "$DIM" "$OFF"
 pause 2
 
-type_cmd "standbox_generate \"$USE_CASE\""
-python3 - "$USE_CASE" <<'PY'
+for entry in "${CASES[@]}"; do
+  cli="${entry%%|*}"
+  use_case="${entry#*|}"
+
+  printf '\n%s=== %s ===%s\n' "$BOLD" "$cli" "$OFF"
+  type_cmd "standbox_generate \"$use_case\""
+  python3 - "$cli" "$use_case" <<'PY'
 import sys
 from standbox.report import build_report
-r = build_report("agent", "kubectl", sys.argv[1], "bundles")
+cli, use_case = sys.argv[1], sys.argv[2]
+r = build_report("agent", cli, use_case, "bundles")
+rows = [l for l in r["markdown"].splitlines() if l.startswith("| ")]
 print("wrote", r["out_dir"] + "/sandbox.md")
+for line in rows[:7]:
+    print(line)
 PY
-pause 2
+  pause 2
 
-printf '\n%s--- use cases tested against the gate (real gate runs) ---%s\n' "$BOLD" "$OFF"
-python3 - "$USE_CASE" <<'PY'
-import sys
-from standbox.report import build_report
-md = build_report("agent", "kubectl", sys.argv[1], "bundles")["markdown"]
-i = md.find("## Use cases")
-print(md[i:i + 1200] if i >= 0 else "(section not found)")
-PY
-pause 3
-
-printf '\n%s--- run the gate directly ---%s\n' "$BOLD" "$OFF"
-export PATH="$WORK/bundles/agent/kubectl/gate:$PATH"
-export STANDBOX_REAL_BIN=/bin/echo
-for c in "get deployments -n mfsada" \
-         "port-forward svc/web 8080:80 -n mfsada" \
-         "get secrets -n mfsada" \
-         "get jobs -n mfsada" \
-         "get pods -n prod" \
-         "get pods -A"; do
-  type_cmd "kubectl $c"
-  kubectl $c
-  pause 1.5
+  export PATH="$WORK/bundles/agent/$cli/gate:$PATH"
+  var="PROBES_$cli"
+  eval "probes=(\"\${${var}[@]}\")"
+  for p in "${probes[@]}"; do
+    cmd="${p%|*}"
+    printf '%s$ %s %s%s\n' "$GREEN" "$cli" "$cmd" "$OFF"
+    # probes are our own literal strings, so eval is safe and preserves
+    # quoting for things like psql -c 'SELECT * FROM users'
+    eval "$cli $cmd" 2>&1
+    pause 1.2
+  done
+  pause 1
 done
 
-printf '\n%s--- one command to run it in a container ---%s\n' "$BOLD" "$OFF"
-python3 - "$USE_CASE" <<'PY'
-import sys
-from standbox.report import build_report
-md = build_report("agent", "kubectl", sys.argv[1], "bundles")["markdown"]
-i = md.find("docker build")
-j = md.find("\n\n", i)
-print(md[i:j] if i >= 0 else "(container command not found)")
-PY
-printf '\n%s(the gated kubectl is the ONLY kubectl in that image)%s\n' "$DIM" "$OFF"
-pause 3
+printf '\n%s--- one command per CLI, container where the gate is the only binary ---%s\n' "$BOLD" "$OFF"
+for entry in "${CASES[@]}"; do
+  cli="${entry%%|*}"
+  printf '  bash bundles/agent/%s/container/run.sh\n' "$cli"
+  pause 0.4
+done
+pause 2

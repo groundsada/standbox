@@ -1,85 +1,121 @@
 # standbox
 
 > **Describe a sandbox in plain English. Get a per-agent permission gate +
-> a human-readable report - no cluster-wide RBAC, no server-side changes.**
+> a human-readable report for any CLI - no server-side changes.**
 
 ![standbox demo](docs/standbox-demo.gif)
 
-*<sub>If the gif doesn't render here, run `make-demo.sh` to regenerate it (see
-[#Demo](README.md#demo)).</sub>*
+*<sub>If the gif doesn't render, run `make-demo.sh` to regenerate it.</sub>*
 
 ---
 
 ## What it does
 
-You're a cluster admin. An AI agent (like Claude Code) needs to work on
-deployments - but only in `mfsada`, only on `pods`/`deployments`, with
-`port-forward` allowed and **no** `secrets`.
-
-With standbox, inside Claude Code you say:
+You want to hand an AI agent a powerful CLI, but not all of it. You write the
+policy in English, standbox writes the enforcement.
 
 ```
-/standbox kubectl: only namespace mfsada, CRUD on pods and deployments,
-        port-forward allowed, no jobs but cronjobs ok, no secrets
+kubectl:     only namespace mfsada, CRUD on pods and deployments,
+             port-forward allowed, no jobs but cronjobs ok, no secrets
+
+git:         read-only: status, log, diff. no push, no commit, no reset
+
+terraform:   plan, validate, state list only. no apply, no destroy, no -auto-approve
+
+psql:        read-only SQL. allow SELECT, WITH, SHOW. deny DROP, DELETE, INSERT
+
+docker:      no persistent mounts, no privileged, read-only rootfs
+
+npm:         run, ls, view, audit. no install, no publish, no exec
 ```
 
-and immediately get:
+For each one you get:
 
-1. **A generated gate** (`bundles/<name>/<cli>/gate/<cli>`) - a deterministic
-   bash policy script that sits on PATH and blocks anything outside the
-   policy (verb / resource / namespace / sub-resource, plus hard-denies like
-   `--raw`, `-A`, `--as`, shell metacharacters).
+1. **A gate** (`bundles/<name>/<cli>/gate/<cli>`) - a deterministic bash script
+   that sits first on PATH and blocks anything outside the policy. Verb,
+   subcommand, resource, namespace, flags, and shell metacharacters are all
+   checked. No LLM at runtime.
 2. **A report** (`bundles/<name>/sandbox.md`) with:
-   - **use cases TESTED against the gate** (each row is a real gate run:
-     ALLOW or BLOCK with the reason),
-   - **what it CANNOT do** (explicit denials + hard-denied flags),
-   - **ONE command** to run it in a Docker container where the gated binary
-     is the *only* binary on PATH,
-   - an honest **"what `kubectl` ACTUALLY runs"** section distinguishing the
-     gate (real enforcement) from the stub target (show-only) and the real
-     cluster mode (mount your real binary + kubeconfig).
+   - **use cases TESTED against the gate** - each row is a real gate run,
+     ALLOW or BLOCK with the reason,
+   - **what it CANNOT do**,
+   - **ONE command** to run it in a container where the gated binary is the
+     only one on PATH,
+   - an honest section separating the gate (real enforcement) from the stub
+     target (show-only) and real mode (mount your real binary).
 
 ### Demo
 
 <a href="docs/standbox-demo.gif"><img src="docs/standbox-demo.gif" width="640" alt="standbox demo"></a>
 
-The demo shows: generate → report → gate ALLOW/BLOCK → docker one-command.
+Generate, read the tested table, watch the gate allow and block, get the
+container command. Same flow for every CLI.
 
 ---
 
 ## Why this exists
 
-The gap: server-side RBAC needs cluster-admin and ServiceAccount/Role management
-(and sometimes a cluster you don't control). Prompting an LLM with "be careful"
-is not enforcement. standbox is a **client-side, per-agent** gate: the policy
-lives on your machine, is enforced by a generated script, and is *auditable*.
+Server-side RBAC needs admin rights and a cluster you control. Prompting an
+LLM with "be careful" is not enforcement. standbox puts the policy on your
+machine, enforced by a generated script, and records what happened.
 
-- **Not** a system sandbox (no seccomp/namespaces).
-- **Is** a policy gate on the *natural* path: whatever `kubectl` (or any
-  supported CLI) you or your agent types through the gate gets checked first.
+- **Not** a system sandbox (no seccomp, no namespaces).
+- **Is** a policy gate on the natural path: whatever you or your agent types
+  goes through the gate first.
 
 ---
 
-## Threat model (read this - honest)
+## How a new CLI gets supported
 
-standbox enforces the **natural path**: `kubectl ...` through the gate.
+The engine is CLI-agnostic. Each CLI is described by one schema dict in
+`standbox/schema.py`:
+
+| Field | Purpose |
+|---|---|
+| `arg_model` | how arguments are shaped: `verb_resource_name`, `subcommand`, `flags_inject`, `sql` |
+| `verbs` / `subcommands` | what can be allowed |
+| `resources` | resource nouns (kubectl-style CLIs) |
+| `hard_deny` | flags that are never allowed regardless of policy (`--raw`, `-A`, `-auto-approve`, `--privileged`) |
+| `namespace_flags` | how namespace scope is expressed (`-n`, `--namespace`, `-A`) |
+
+Four arg models cover the shapes we've hit so far:
+
+- **verb_resource_name** - `kubectl get pods`, `docker ps`
+- **subcommand** - `gh pr list`, `terraform plan`, `aws s3 ls` (nested tokens)
+- **flags_inject** - `docker run` with enforced flags injected
+- **sql** - statement-level allow/deny for `psql`
+
+Shipped schemas: kubectl, docker, git, gh, aws, terraform, helm, npm, gcloud,
+psql.
+
+**This is hand-written grammar, not `--help` scraping.** standbox does not run
+`<cli> --help` and infer the grammar. If your CLI isn't in the list, add a
+dict - about 20 lines - or pass explicit `constraints` JSON.
+
+---
+
+## Threat model (honest)
+
+standbox enforces the **natural path**: the CLI invoked by name, through the
+gate.
 
 It does **NOT** stop:
-- `/usr/local/bin/kubectl` (absolute path) or `curl` straight to the apiserver,
-- an agent with the same user's file access that reads your real kubeconfig,
-- a fully hostile root-like process on the same machine.
+- the absolute path (`/usr/local/bin/<cli>`), which skips the gate,
+- `curl` or a library talking to the same API with your credentials,
+- an agent with your file access reading real credentials directly,
+- a hostile process running as your user.
 
-The container mode narrows this: the image contains **only** the gated binary,
-so `/usr/local/bin/kubectl` *is* the gate and there is nothing else to run.
+Container mode narrows this: the image contains only the gated binary, so
+`/usr/local/bin/<cli>` *is* the gate. Real mode (bind-mounting your binary and
+credentials) reopens the caveat, and the generated report says so.
 
-See [SECURITY.md](SECURITY.md) for the full model and what we are / aren't.
+See [SECURITY.md](SECURITY.md).
 
 ---
 
 ## Install
 
 ```bash
-# from this repo
 pip install .
 # dependencies: mcp>=1,<2 ; pyyaml
 ```
@@ -99,40 +135,25 @@ pip install .
 }
 ```
 
-(Install as a package once, then `python -m standbox.mcp_server` works anywhere
-with no absolute paths.)
-
 ---
 
 ## Quick start
 
 ```bash
-# 1. start a session in the target project (identity = this project)
-claude
+# 1. in Claude Code, generate a sandbox for any CLI
+#    /standbox terraform: plan and validate only, no apply, no destroy
 
-# 2. in Claude Code:
-#    /standbox kubectl: only namespace mfsada, crud on pods+deployments,
-#        port-forward allowed, no jobs but cronjobs ok, no secrets
-
-# 3. inspect the report
+# 2. read the report
 cat bundles/agent/sandbox.md
 
-# 4. run the gate locally
-export PATH="$PWD/bundles/agent/kubectl/gate:$PATH"
-kubectl get deployments -n mfsada   # ALLOWED (gate checks, then execs real kubectl)
-kubectl get secrets -n mfsada       # BLOCKED with reason
+# 3. run the gate locally
+export PATH="$PWD/bundles/agent/terraform/gate:$PATH"
+terraform plan        # ALLOWED
+terraform apply       # BLOCKED with reason
 
-# 5. or in a container (gated kubectl is the ONLY kubectl)
-bash bundles/agent/kubectl/container/run.sh
+# 4. or in a container where the gated binary is the only one
+bash bundles/agent/terraform/container/run.sh
 ```
-
----
-
-## Supported CLIs
-
-kubectl · docker · git · gh · aws · terraform · helm · npm · gcloud · psql (SQL: SELECT/WITH/SHOW only)
-
-**Adding a CLI = adding a schema dict** in `standbox/schema.py` (verbs/resources/subcommands, hard-denies). The engine, gate templates, and report are generic.
 
 ---
 
@@ -141,23 +162,23 @@ kubectl · docker · git · gh · aws · terraform · helm · npm · gcloud · p
 ```
  natural language "use case"
         │
-   ┌────▼─────┐   schema.py (CLI grammar data)
-   │ MCP tool │──► constraints {verbs, resources, namespaces, deny}
+   ┌────▼─────┐   schema.py (per-CLI grammar data)
+   │ MCP tool │──► constraints {verbs, subcommands, resources, namespaces, deny}
    │ generate │
    └────┬─────┘
-        ├──► gate script (deterministic bash policy: verb×resource×ns×subres, hard-denies)
+        ├──► gate script (deterministic bash policy, hard-denies)
         ├──► policy.yaml  +  container/ (Dockerfile, run.sh, staged gate)
         ├──► sandbox.md   (use cases TESTED - each row a real gate run)
         └──► audit.jsonl  (ts, sandbox, command, verdict, reason)
 ```
 
-Enforcement is a **generated script**, never an LLM. The LLM only drafts the
-constraints from your English use case (you can pass exact `constraints` JSON
-to bypass the naive parser).
+Enforcement is a generated script, never an LLM. The LLM only drafts the
+constraints from your English; you can pass exact `constraints` JSON to skip
+the naive parser.
 
 ---
 
-## CLI reference (MCP tools)
+## MCP tools
 
 | Tool | What it does |
 |---|---|
@@ -169,27 +190,20 @@ to bypass the naive parser).
 
 ---
 
-## Demo
-
-To (re)generate the demo gif:
+## Demo script
 
 ```bash
-brew install asciinema    # or npm i -g asciinema-player
-./make-demo.sh            # records docs/standbox-demo.gif
+brew install asciinema agg
+./make-demo.sh            # writes docs/standbox-demo.gif
 ```
-
-The script drives a real `claude`/MCP session through: generate → report →
-gate ALLOW/BLOCK → container one-command, then converts the asciinema cast to
-a gif with `agg` (if installed) or leaves the `.cast` for
-`asciinema play`.
 
 ---
 
 ## Status
 
-v0.1.0. Not yet: signed gates, Windows support, native package upload.
-The container ships a stub target by default; real cluster mode mounts a
-Linux binary at `/usr/local/bin/<cli>.real` (see the generated report).
+v0.1.0. Not yet: `--help` scraping, signed gates, Windows support. Container
+ships a stub target by default; real mode mounts a Linux binary at
+`/usr/local/bin/<cli>.real` (see the generated report).
 
 ## License
 
@@ -197,4 +211,4 @@ Linux binary at `/usr/local/bin/<cli>.real` (see the generated report).
 
 ## Security
 
-[SECURITY.md](SECURITY.md) - threat model + reporting.
+[SECURITY.md](SECURITY.md)

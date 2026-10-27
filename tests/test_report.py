@@ -38,3 +38,19 @@ def test_report_generates_bundle_files(cli):
         assert os.path.isfile(os.path.join(out, cli, "container", "standbox-gate")), f"{cli}: staged gate missing"
     finally:
         shutil.rmtree(tmp)
+
+
+@pytest.mark.parametrize("cli,use_case", [
+    ("git", "read-only: status log diff. no push, no commit"),
+    ("terraform", "read-only: plan, validate, state list. no apply, no destroy"),
+])
+def test_subcommand_tested_rows_use_real_commands(cli, use_case):
+    """Single-word subcommands must be tested bare (`git status`), not with a
+    fabricated `list` argument."""
+    tmp = tempfile.mkdtemp()
+    try:
+        md = build_report("t", cli, use_case, tmp)["markdown"]
+        assert " status list " not in md, f"{cli}: fabricated 'status list' test row"
+        assert " plan list " not in md, f"{cli}: fabricated 'plan list' test row"
+    finally:
+        shutil.rmtree(tmp)
