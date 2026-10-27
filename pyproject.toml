@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "standbox"
+version = "0.1.0"
+description = "Generate per-agent, client-side permission gates for CLIs from a plain-English use case (inside Claude Code via MCP)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Mohammad Firas Sada" }]
+keywords = ["mcp", "sandbox", "rbac", "kubectl", "cli", "permissions", "agent"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Software Development :: Build Tools",
+    "Framework :: MCP",
+]
+dependencies = [
+    "mcp>=1,<2",
+    "pyyaml",
+]
+
+[project.scripts]
+standbox = "standbox.mcp_server:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.4"]
+
+[tool.setuptools]
+packages = ["standbox", "standbox.internal"]
+
+[tool.setuptools.package-data]
+standbox = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]  # long f-strings in report builder
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

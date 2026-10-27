@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Generated artifacts / local state
+bundles/
+*.log
+session.env
+
+# Proto remnants
+bin/
+
+# Editor / OS
+.DS_Store
+*.swp
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Demo media (large) unless intentionally added
+docs/*.mp4
+
+# Build artifacts
+.ruff_cache/

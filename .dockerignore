@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+bundles/
+.pytest_cache/
+.git/
+.github/
+docs/*.cast
+*.log
+session.env
