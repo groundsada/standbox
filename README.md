@@ -187,9 +187,9 @@ a gif with `agg` (if installed) or leaves the `.cast` for
 
 ## Status
 
-Prototype → hardening. See [SHORTCOMINGS.md](SHORTCOMINGS.md) for the honest
-gap list and the production-readiness plan. Not yet: signed gates, Windows
-support, native package upload.
+v0.1.0. Not yet: signed gates, Windows support, native package upload.
+The container ships a stub target by default; real cluster mode mounts a
+Linux binary at `/usr/local/bin/<cli>.real` (see the generated report).
 
 ## License
 
